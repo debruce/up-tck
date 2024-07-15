@@ -13,9 +13,17 @@
 #define _TEST_AGENT_H_
 
 #include <Constants.h>
-#include <SocketUTransport.h>
-#include <up-client-zenoh-cpp/client/upZenohClient.h>
-#include <up-cpp/uri/serializer/LongUriSerializer.h>
+//#include <SocketUTransport.h>
+//#include <up-client-zenoh-cpp/client/upZenohClient.h>
+// TODO:: Remote transport mock include
+#include <UTransportMock.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <unistd.h>
+#include <up-cpp/communication/Publisher.h>
+#include <up-cpp/communication/RpcClient.h>
+#include <up-cpp/communication/RpcServer.h>
+#include <up-cpp/communication/Subscriber.h>
 
 #include <variant>
 
@@ -25,6 +33,16 @@ using FunctionType =
     std::variant<std::function<uprotocol::v1::UStatus(rapidjson::Document&)>,
                  std::function<void(rapidjson::Document&)>>;
 
+using CommunicationVariantType =
+    std::variant<uprotocol::transport::UTransport::ListenHandle,
+                 std::unique_ptr<uprotocol::communication::Subscriber>,
+                 uprotocol::communication::RpcClient,
+                 std::unique_ptr<uprotocol::communication::RpcServer>>;
+
+// TODO:: Come back to this later let try different approach now
+// using ResultType = uprotocol::utils::Expected<CommunicationVariantType,
+// uprotocol::v1::UStatus>;
+
 /// @class TestAgent
 /// @brief Represents a test agent that communicates with a test manager.
 ///
@@ -32,7 +50,7 @@ using FunctionType =
 /// and receiving messages, and handling various commands. It inherits from the
 /// UListener class to handle incoming messages.
 
-class TestAgent : public uprotocol::utransport::UListener {
+class TestAgent {
 public:
 	/// @brief Constructs a TestAgent object with the specified transport type.
 	/// @param[in] transportType The type of transport to be used by the agent.
@@ -52,9 +70,9 @@ public:
 	/// @param[in] proto The message to be sent.
 	/// @param[in] action The action associated with the message.
 	/// @param[in] strTest_id The ID of the test (optional).
-	void sendToTestManager(const google::protobuf::Message& proto,
-	                       const string& action,
-	                       const string& strTest_id = "") const;
+	void sendToTestManager(const uprotocol::v1::UMessage& proto,
+	                       const std::string& action,
+	                       const std::string& strTest_id = "") const;
 
 	/// @brief Sends a message to the test manager.
 	/// @param[in,out] doc The JSON document to be sent.
@@ -62,8 +80,8 @@ public:
 	/// @param[in] action The action associated with the message.
 	/// @param[in] strTest_id The ID of the test (optional).
 	void sendToTestManager(rapidjson::Document& doc, rapidjson::Value& jsonVal,
-	                       const string action,
-	                       const string& strTest_id = "") const;
+	                       const std::string action,
+	                       const std::string& strTest_id = "") const;
 
 private:
 	// The socket used for communication with the test manager.
@@ -71,16 +89,16 @@ private:
 	// The address of the test manager.
 	struct sockaddr_in mServerAddress_;
 	// The transport layer used for communication.
-	std::shared_ptr<uprotocol::utransport::UTransport> transportPtr_;
+	std::shared_ptr<uprotocol::transport::UTransport> transportPtr_;
 	// The map of action handlers.
 	std::unordered_map<std::string, FunctionType> actionHandlers_;
 
-	/// @brief Callback function called when a message is received from the
-	/// transport layer.
-	/// @param[in] transportUMessage The received message.
-	/// @return The status of the message processing.
-	uprotocol::v1::UStatus onReceive(
-	    uprotocol::utransport::UMessage& transportUMessage) const;
+	// The map of uri to callback handle
+	std::unordered_multimap<std::string, CommunicationVariantType>
+	    uriCallbackMap_;
+
+	std::vector<uprotocol::communication::RpcClient::InvokeHandle>
+	    rpcClientHandles_;
 
 	/// @brief Processes the received message.
 	/// @param[in,out] jsonData The JSON data of the received message.
@@ -89,6 +107,12 @@ private:
 	/// @brief Disconnects the agent from the test manager.
 	/// @return The status of the disconnection.
 	void socketDisconnect();
+
+	uprotocol::v1::UStatus addHandleToUriCallbackMap(
+	    CommunicationVariantType&& handel, const uprotocol::v1::UUri& uri);
+
+	uprotocol::v1::UStatus removeHandleOrProvideError(
+	    const uprotocol::v1::UUri& uri);
 
 	/// @brief Handles the "sendCommand" command received from the test manager.
 	/// @param[in,out] jsonData The JSON data of the command.
@@ -112,31 +136,38 @@ private:
 	/// @brief Handles the "invokeMethod" command received from the test
 	/// manager.
 	/// @param[in,out] jsonData The JSON data of the command.
-	void handleInvokeMethodCommand(rapidjson::Document& jsonData);
+	uprotocol::v1::UStatus handleRpcClientCommand(
+	    rapidjson::Document& jsonData);
 
-	/// @brief Handles the "serializeUri" command received from the test
+	uprotocol::v1::UStatus handleRpcServerCommand(
+	    rapidjson::Document& jsonData);
+
+	/// @brief Handles the "publisher" command received from the test
 	/// manager.
 	/// @param[in,out] jsonData The JSON data of the command.
-	void handleSerializeUriCommand(rapidjson::Document& jsonData);
+	/// @return The status of the command handling.
+	uprotocol::v1::UStatus handlePublisherCommand(
+	    rapidjson::Document& jsonData);
 
 	/// @brief Handles the "deserializeUri" command received from the test
 	/// manager.
 	/// @param[in,out] jsonData The JSON data of the command.
-	void handleDeserializeUriCommand(rapidjson::Document& jsonData);
+	uprotocol::v1::UStatus handleSubscriberCommand(
+	    rapidjson::Document& jsonData);
 
 	/// @brief Creates a transport layer object based on the specified transport
 	/// type.
 	/// @param[in] transportType The type of transport to be created.
 	/// @return A shared pointer to the created transport layer object.
-	std::shared_ptr<uprotocol::utransport::UTransport> createTransport(
-	    const std::string& transportType);
+	// std::shared_ptr<uprotocol::transport::UTransport> createTransport(
+	//     const std::string& transportType);
 
 	/// @brief Writes data to the test manager socket.
 	/// @param[in,out] responseDoc The JSON document containing the response
 	/// data.
 	/// @param[in] action The action associated with the response.
 	void writeDataToTMSocket(rapidjson::Document& responseDoc,
-	                         const string action) const;
+	                         const std::string action) const;
 
 	/// @brief Creates a string value for a RapidJSON document.
 	/// @param[in,out] doc The RapidJSON document to which the string value will
